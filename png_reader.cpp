@@ -3,8 +3,9 @@
 #include <stdint.h>
 #include <memory.h>
 #include <assert.h>
-#include <math.h>
+
 #define arrayCount(count) (sizeof(count) / sizeof(count[0]))
+
 
 typedef uint64_t u64;
 typedef uint32_t u32;
@@ -19,67 +20,142 @@ typedef int64_t s64;
 typedef float  f32;
 typedef double f64;
 
-
 #include "png_reader.h"
 
-u8 baseLengthExtraBit[] = 
+u32
+swapAB(u32 c)
 {
-    0, 0, 0, 0, 0, 0, 0, 0, //257 - 264
-    1, 1, 1, 1, //265 - 268
-    2, 2, 2, 2, //269 - 273 
-    3, 3, 3, 3, //274 - 276
-    4, 4, 4, 4, //278 - 280
-    5, 5, 5, 5, //281 - 284
-    0           //285
+    u32 result = ((c & 0xFF00FF00) |
+                  ((c >> 16)&0xFF) | 
+                  ((c & 0xFF) << 16));
+    return result;
+}
+
+void
+writeImage(u8 *pixels,u32 width, u32 height,char *outputFileName)
+{
+    
+    u32 outputPixelSize = 4*width*height;
+    
+    bmp_header header = {};
+    
+    header.fileType = 0x4D42;
+    header.fileSize = sizeof(header) + outputPixelSize;
+    header.bitmapOffset = sizeof(header);
+    header.size = sizeof(header) - 14;
+    header.width = width;
+    header.height = height;
+    header.planes = 1;
+    header.bitsPerPixel = 32;
+    header.compression = 0;
+    header.sizeOfBitmap = outputPixelSize;
+    header.horzResolution = 0;
+    header.vertResolution = 0;
+    header.colorsUsed = 0;
+    header.colorsImportant = 0;
+    
+    
+    u32 centerPoint = (header.height + 1) / 2;
+    u32 *row0 = (u32*)pixels;
+    u32 *row1 = row0 + ((height - 1) * width);
+    
+    // RGBA -> -> ->
+    // BGRA
+    for(u32 y = 0; y < centerPoint; y++)
+    {
+        u32 *pix0 = row0;
+        u32 *pix1 = row1;
+        for(u32 x = 0; x < width; x++)
+        {
+            u32 c0 = swapAB(*pix0);
+            u32 c1 = swapAB(*pix1);
+            
+            *pix0++ = c1;
+            *pix1++ = c0;
+        }
+        row0 += width;
+        row1 -= width;
+    }
+    
+    FILE *file = fopen(outputFileName, "wb");
+    if(file)
+    {
+        fwrite(&header, sizeof(header),1,file);
+        fwrite(pixels, outputPixelSize,1,file);
+        fclose(file);
+    }
+    else
+    {
+        fprintf(stderr, "[ERROR] Unable to write output file %s.\n", outputFileName);
+    }
+    
+}
+
+png_huffman_entry pngLengthExtra[] =
+{
+    {3, 0}, // 257
+    {4, 0}, // 258
+    {5, 0}, // 259
+    {6, 0}, // 260
+    {7, 0}, // 261
+    {8, 0}, // 262
+    {9, 0}, // 263
+    {10, 0}, // 264
+    {11, 1}, // 265
+    {13, 1}, // 266
+    {15, 1}, // 267
+    {17, 1}, // 268
+    {19, 2}, // 269
+    {23, 2}, // 270
+    {27, 2}, // 271
+    {31, 2}, // 272
+    {35, 3}, // 273
+    {43, 3}, // 274
+    {51, 3}, // 275
+    {59, 3}, // 276
+    {67, 4}, // 277
+    {83, 4}, // 278
+    {99, 4}, // 279
+    {115, 4}, // 280
+    {131, 5}, // 281
+    {163, 5}, // 282
+    {195, 5}, // 283
+    {227, 5}, // 284
+    {258, 0}, // 285
 };
 
-u32 baseLengths[] = 
+png_huffman_entry pngDistExtra[] =
 {
-    3, 4, 5, 6, 7, 8, 9, 10, //257 - 264
-    11, 13, 15, 17,          //265 - 268
-    19, 23, 27, 31,          //269 - 273 
-    35, 43, 51, 59,          //274 - 276
-    67, 83, 99, 115,         //278 - 280
-    131, 163, 195, 227,      //281 - 284
-    258                      //285
-};
-
-u32 distanceCodes[] = 
-{
-    /*0*/ 1, 2, 3, 4,    //0-3
-    /*1*/ 5, 7,          //4-5
-    /*2*/ 9, 13,         //6-7
-    /*3*/ 17, 25,        //8-9
-    /*4*/ 33, 49,        //10-11
-    /*5*/ 65, 97,        //12-13
-    /*6*/ 129, 193,      //14-15
-    /*7*/ 257, 385,      //16-17
-    /*8*/ 513, 769,      //18-19
-    /*9*/ 1025, 1537,    //20-21
-    /*10*/ 2049, 3073,   //22-23
-    /*11*/ 4097, 6145,   //24-25
-    /*12*/ 8193, 12289,  //26-27
-    /*13*/ 16385, 24577,  //28-29
-    0   , 0      //30-31, error
-};
-
-u32 distExtraBits[] = 
-{
-    /*0*/ 0, 0, 0, 0, //0-3
-    /*1*/ 1, 1,       //4-5
-    /*2*/ 2, 2,       //6-7
-    /*3*/ 3, 3,       //8-9
-    /*4*/ 4, 4,       //10-11
-    /*5*/ 5, 5,       //12-13
-    /*6*/ 6, 6,       //14-15
-    /*7*/ 7, 7,       //16-17
-    /*8*/ 8, 8,       //18-19
-    /*9*/ 9, 9,       //20-21
-    /*10*/ 10, 10,    //22-23
-    /*11*/ 11, 11,    //24-25
-    /*12*/ 12, 12,    //26-27
-    /*13*/ 13, 13,     //28-29
-    0 , 0      //30-31 error
+    {1, 0},  //0
+    {2, 0}, // 1
+    {3, 0}, // 2
+    {4, 0}, // 3
+    {5, 1}, // 4
+    {7, 1}, // 5
+    {9, 2}, // 6
+    {13, 2}, // 7
+    {17, 3}, // 8
+    {25, 3}, // 9
+    {33, 4}, // 10
+    {49, 4}, // 11
+    {65, 5}, // 12
+    {97, 5}, // 13
+    {129, 6}, //14 
+    {193, 6}, //  15
+    {257, 7}, //  16
+    {385, 7}, //  17
+    {513, 8}, //  18
+    {769, 8}, //  19
+    {1025, 9}, //  20
+    {1537, 9}, //  21
+    {2049, 10}, //  22
+    {3073, 10}, //  23
+    {4097, 11}, //  24
+    {6145, 11}, //  25
+    {8193, 12}, //  26
+    {12289, 12}, // 27
+    {16385, 13}, // 28
+    {24577, 13}, 
 };
 
 streaming_chunk *
@@ -114,12 +190,9 @@ readEntireFile(char *filename)
     return result;
 }
 
-#define consume(file, type) (type*)consumeSize(file,sizeof(type))
-
-void *
-consumeSize(streaming_buffer *file,u32 size)
+void
+refillBuffer(streaming_buffer *file)
 {
-    void *result = 0;
     if((file->size == 0) && file->first)
     {
         streaming_chunk *This = file->first;
@@ -127,6 +200,14 @@ consumeSize(streaming_buffer *file,u32 size)
         file->memory = This->memory;
         file->first = This->next;
     }
+}
+
+#define consume(file, type) (type*)consumeSize(file,sizeof(type))
+void *
+consumeSize(streaming_buffer *file,u32 size)
+{
+    void *result = 0;
+    refillBuffer(file);
     if(file->size >= 0)
     {
         result = file->memory;
@@ -197,6 +278,7 @@ peekBites(streaming_buffer *buf, u32 bitCount)
     else
     {
         buf->underflow = true;
+        fprintf(stderr,"uunderflow!!!!!!\n");
     }
     return result;
 }
@@ -310,7 +392,6 @@ buildHuffman(u32 symbolCount,u32 *symbolCodeLength,png_huffman *result,u32 symbo
 u32
 decodeHuffman(png_huffman *huffman,streaming_buffer *buf)
 {
-    
     u32 entryIndex = peekBites(buf,huffman->maxCodeLengthBits);
     assert(entryIndex < huffman->entryCount);
     
@@ -322,38 +403,6 @@ decodeHuffman(png_huffman *huffman,streaming_buffer *buf)
     return result;
 }
 
-/*
-void
-filterType0(u32 width, u8 *result, u8 *src)
-{
-    for(u32 x = 0; x < width * 4; x++)
-    {
-        *result++ = *src++;
-    }
-}
-
-void
-filterType1(u32 width, u8 *result, u8 *src)
-{
-    
-    for(u32 x = 0; x < width * 4; x++)
-    {
-        u8 *a = src - 1;
-        *result++ = *src++ + *a;
-    }
-}
-
-void
-filterType2(u32 width, u8 *result, u8 *src, u8 *prevScanline, u32 stride)
-{
-    for(u32 x = 0; x < width * 4; x++)
-    {
-        u8 *b = src - stride;
-        *result++ = *src++ + *b; 
-    }
-}
-*/
-
 u8
 filterType1(u8 *x, u8 *a,u32 channel)
 {
@@ -361,7 +410,7 @@ filterType1(u8 *x, u8 *a,u32 channel)
     
     result = (u8)x[channel] + (u8)a[channel];
     
-    return result = 0;
+    return result;
 }
 
 u8
@@ -371,7 +420,7 @@ filterType2(u8 *x, u8 *b,u32 channel)
     
     result = (u8)x[channel] + (u8)b[channel];
     
-    return result = 0;
+    return result;
 }
 
 u8 
@@ -389,9 +438,9 @@ filterType4(u8 *x,u8 *aIn, u8 *bIn,u8 *cIn,u32 channel)
 {
     u8 result = 0;
     
-    s8 a = aIn[channel];
-    s8 b = bIn[channel];
-    s8 c = cIn[channel];
+    s32 a = (s32)aIn[channel];
+    s32 b = (s32)bIn[channel];
+    s32 c = (s32)cIn[channel];
     
     s32 p = a + b - c;
     
@@ -413,14 +462,15 @@ filterType4(u8 *x,u8 *aIn, u8 *bIn,u8 *cIn,u32 channel)
         pr = c;
     }
     
-    result = c;
+    result = (u8)x[channel] + (u8)pr;
     
     return result;
 }
 
-void
-parsingPNG(streaming_buffer *file)
+u8 *
+parsingPNG(Memory_arena *arena, streaming_buffer *file, u32 *widthOut, u32 *heightOut)
 {
+    void *result = 0;
     streaming_buffer *at = file;
     streaming_buffer compData = {};
     u8 *decompressedPixels = 0;
@@ -429,6 +479,8 @@ parsingPNG(streaming_buffer *file)
     bool supported = true;
     u32 width = 0;
     u32 height = 0;
+    
+    image_out_info imageInfo = {};
     
     png_header *fileHeader = consume(file, png_header);
     if(fileHeader)
@@ -465,6 +517,9 @@ parsingPNG(streaming_buffer *file)
                         width = ihdr->width;
                         height = ihdr->height;
                         
+                        imageInfo.width = width;
+                        imageInfo.height = height;
+                        
                         if(ihdr->colorType != 6)
                         {
                             fprintf(stdout, "The color type of %u is not supported. Supported only 6(RGBA)\n",ihdr->colorType);
@@ -477,9 +532,11 @@ parsingPNG(streaming_buffer *file)
                             supported = false;
                         }
                         decompressedPixels = (u8*)allocatePixels(width,height,4, 1);
-                        imagePixels = (u8*)allocatePixels(width,ihdr->height,4, 0);
                         
-                        imagePixelsEnd = imagePixels + (width * height * 4);
+                        
+                        
+                        imagePixels = (u8*)allocatePixels(width,ihdr->height,4, 0);
+                        imagePixelsEnd = imagePixels + ((width * height * 4));
                     }
                     else if(FOURCC("IDAT") == chunkHeader->u32Type)
                     {
@@ -525,20 +582,22 @@ parsingPNG(streaming_buffer *file)
         if(CM != 8)
         {
             fprintf(stderr,"CM is not an eight(8). Others compression methods is not supported\n");
+            supported = false;
         }
         
         if((idatHeader->zLibMethodFlags*256+idatHeader->additionalFlags) % 31 != 0)
         {
             fprintf(stderr,"bad zlib header\n");
+            supported = false;
         }
+        u8 *dest = decompressedPixels;
         
         u32 BFINAL = 0;
-        u8 *dest = decompressedPixels;
+        
         while(BFINAL == 0)
         {
             BFINAL = consumeBits(&compData,1);
             u32 BTYPE  = consumeBits(&compData,2);
-            
             if(BTYPE == 0)
             {
                 flushBytes(&compData);
@@ -549,10 +608,22 @@ parsingPNG(streaming_buffer *file)
                     fprintf(stderr,"LEN/NLEN mismatch");
                 }
                 
-                u8 *out = (u8*)consumeSize(&compData,LEN);
-                while(LEN--)
+                while(LEN)
                 {
-                    *dest++ = *out++;
+                    refillBuffer(&compData);
+                    u16 currentLen = LEN;
+                    if(currentLen > compData.size)
+                    {
+                        currentLen = (u16)compData.size;
+                    }
+                    u8 *out = (u8*)consumeSize(&compData,currentLen);
+                    while(LEN--)
+                    {
+                        *dest++ = *out++;
+                    }
+                    
+                    LEN -= currentLen;
+                    
                 }
                 
             }
@@ -562,6 +633,7 @@ parsingPNG(streaming_buffer *file)
             }
             else
             {
+                u32 litLenDistTable[512];
                 png_huffman litLenHuffman = allocateHuffman(15);
                 png_huffman distHuffman = allocateHuffman(15);
                 if(BTYPE == 2) // NOTE(shvayko): dynamic huffman codes
@@ -596,7 +668,6 @@ parsingPNG(streaming_buffer *file)
                     png_huffman dictHuffman = allocateHuffman(7);
                     buildHuffman(arrayCount(HCLENCodeLengths),HCLENtable,&dictHuffman);
                     
-                    u32 litLenDistTable[512];
                     u32 litLenCount = 0;
                     u32 lenCount = HLIT + HDIST;
                     while(litLenCount < lenCount)
@@ -646,33 +717,73 @@ parsingPNG(streaming_buffer *file)
                 }
                 else // NOTE(shvayko): fixed huffman codes
                 {
+                    u32 HLIT = 288;
+                    u32 HDIST = 32;
                     
+                    u32 fixedHuffmanTable[][2] = 
+                    {
+                        {143,8},
+                        {255,9},
+                        {279,9},
+                        {287,8},
+                        {319,5},
+                    };
+                    
+                    u32 tableIndex = 0;
+                    for(s32 numbersRange = 0; numbersRange < arrayCount(fixedHuffmanTable);
+                        numbersRange++)
+                    {
+                        u32 bitCount = fixedHuffmanTable[numbersRange][1];
+                        while(tableIndex < fixedHuffmanTable[numbersRange][0])
+                        {
+                            litLenDistTable[tableIndex++] = bitCount;
+                        }
+                    }
+                    
+                    buildHuffman(HLIT,litLenDistTable,&litLenHuffman);
+                    buildHuffman(HDIST,litLenDistTable + HLIT,&distHuffman);
+                    fprintf(stderr,"fixed huffman code\n");
                 }
                 // NOTE(shvayko): code for all cases no matter is fixed or dynamic 
                 // huffman codes
-#if 1
+                
                 for(;;)
                 {
                     u32 litLen = decodeHuffman(&litLenHuffman,&compData);
                     if(litLen < 256)
                     {
                         u32 out = litLen & 0xFF;
-                        *dest++ = out;
+                        *dest++ = (u8)out;
                     }
                     else if(litLen > 256)
                     {
-                        u32 length = litLen - 257;
+                        u32 lenTableIndex = litLen - 257;
+                        png_huffman_entry lenTable = pngLengthExtra[lenTableIndex];
+                        u32 length = lenTable.symbol;
                         
-                        u32 dupLen = baseLengths[length] + consumeBits(&compData,baseLengthExtraBit[length]);
+                        if(lenTable.bitsUsed)
+                        {
+                            u32 extraBits = consumeBits(&compData,lenTable.bitsUsed);
+                            length += extraBits;
+                        }
                         
-                        u32 distance = decodeHuffman(&distHuffman,&compData);
+                        u32 distTableIndex = decodeHuffman(&distHuffman,&compData);
+                        png_huffman_entry distTable = pngDistExtra[distTableIndex];
                         
-                        u32 distanceLength = distanceCodes[distance] + consumeBits(&compData, distExtraBits[distance]);
+                        u32 dist = distTable.symbol;
+                        if(distTable.bitsUsed)
+                        {
+                            u32 extraBits = consumeBits(&compData,distTable.bitsUsed);
+                            dist += extraBits; 
+                        }
                         
+                        u8 *src = dest - dist;
                         
-                        u8 *src = (u8*)dest - distanceLength;
-                        assert(src >= decompressedPixels);
-                        while(dupLen--)
+                        //assert((src + length) <= imagePixelsEnd);
+                        //assert((dest + length) <= imagePixelsEnd);
+                        //assert(src >= decompressedPixels);
+                        
+                        while(length--)
                         {
                             *dest++ = *src++;
                         }
@@ -682,131 +793,137 @@ parsingPNG(streaming_buffer *file)
                         break;
                     }
                 }
-#endif
-                BFINAL = 1;
-                break;
             }
-            // NOTE(shvayko):FITLERING
-            u32 zero = 0;
-            u8 *prevScanline = (u8*)&zero;
-            u32 prevRowAdvance = 0;
-            
-            u8 *src = decompressedPixels;
-            u8 *dest = imagePixels;
-            
-            
-            
-            for(u32 row = 0; row < height; row++)
-            {
-                u8 filterType = *src++;
-                u8 *currentScanline = dest;
-                switch(filterType)
-                {
-                    case 0: //NOTE(shvayko):None
-                    {
-                        for(u32 x = 0; x < width; x++)
-                        {
-                            *(u32*)dest = *(u32*)src;
-                            
-                            src += 4;
-                            dest += 4;
-                        }
-                    }break;
-                    case 1: //NOTE(shvayko):Sub
-                    {
-                        u32 a = 0;
-                        for(u32 x = 0; x < width; x++)
-                        {
-                            dest[0] = filterType1(dest,(u8*)&a,0);
-                            dest[1] = filterType1(dest,(u8*)&a,1);
-                            dest[2] = filterType1(dest,(u8*)&a,2);
-                            dest[3] = filterType1(dest,(u8*)&a,3);
-                            
-                            a = *(u32*)dest;
-                            
-                            src += 4;
-                            dest += 4;
-                        }
-                    }break;
-                    case 2: //NOTE(shvayko):Up
-                    {
-                        u8 *b = prevScanline;
-                        
-                        for(u32 x = 0; x < width;x++)
-                        {
-                            dest[0] = filterType2(dest,b,0);
-                            dest[1] = filterType2(dest,b,1);
-                            dest[2] = filterType2(dest,b,2);
-                            dest[3] = filterType2(dest,b,3);
-                            
-                            b += prevRowAdvance;
-                            src += 4;
-                            dest += 4;
-                        }
-                    }break;
-                    case 3:
-                    {
-                        u32 a = 0;
-                        u8 *b = prevScanline;
-                        for(u32 x = 0; x < width;x++)
-                        {
-                            dest[0] = filterType3(dest,(u8*)&a,b,0);
-                            dest[1] = filterType3(dest,(u8*)&a,b,1);
-                            dest[2] = filterType3(dest,(u8*)&a,b,2);
-                            dest[3] = filterType3(dest,(u8*)&a,b,3);
-                            
-                            a = *(u32*)dest;
-                            
-                            b += prevRowAdvance;
-                            src += 4;
-                            dest += 4;
-                        }
-                    }break;
-                    case 4:
-                    {
-                        u32 a = 0;
-                        u32 c = 0;
-                        u8 *b = prevScanline;
-                        
-                        for(u32 x = 0; x < width;x++)
-                        {
-                            dest[0] = filterType4(dest,(u8*)&a,b,(u8*)&c,0);
-                            dest[1] = filterType4(dest,(u8*)&a,b,(u8*)&c,1);
-                            dest[2] = filterType4(dest,(u8*)&a,b,(u8*)&c,2);
-                            dest[3] = filterType4(dest,(u8*)&a,b,(u8*)&c,3);
-                            
-                            c = *(u32*)b;
-                            a = *(u32*)dest;
-                            
-                            b += prevRowAdvance;
-                            src += 4;
-                            dest += 4;
-                        }
-                    }break;
-                    default:
-                    {
-                        fprintf(stdout,"The filter type of %u is not supported", filterType);
-                    }break;
-                }
-                prevScanline = currentScanline;
-                prevRowAdvance += 4;
-            }
-            
-            assert(dest == imagePixelsEnd);
-            
         }
+        // NOTE(shvayko):FITLERING
+        u32 zero = 0;
+        u8 *prevScanline = (u8*)&zero;
+        u32 prevRowAdvance = 0;
+        
+        u8 *src = decompressedPixels;
+        u8 *dst = imagePixels;
+        
+        for(u32 row = 0; row < height; row++)
+        {
+            u8 filterType = *src++;
+            u8 *currentScanline = dst;
+            switch(filterType)
+            {
+                case 0: //NOTE(shvayko):None
+                {
+                    for(u32 x = 0; x < width; x++)
+                    {
+                        *(u32*)dst = *(u32*)src;
+                        
+                        src += 4;
+                        dst += 4;
+                    }
+                }break;
+                case 1: //NOTE(shvayko):Sub
+                {
+                    u32 a = 0;
+                    for(u32 x = 0; x < width; x++)
+                    {
+                        dst[0] = filterType1(src,(u8*)&a,0);
+                        dst[1] = filterType1(src,(u8*)&a,1);
+                        dst[2] = filterType1(src,(u8*)&a,2);
+                        dst[3] = filterType1(src,(u8*)&a,3);
+                        
+                        a = *(u32*)dst;
+                        
+                        src += 4;
+                        dst += 4;
+                    }
+                }break;
+                case 2: //NOTE(shvayko):Up
+                {
+                    u8 *b = prevScanline;
+                    
+                    for(u32 x = 0; x < width;x++)
+                    {
+                        dst[0] = filterType2(src,b,0);
+                        dst[1] = filterType2(src,b,1);
+                        dst[2] = filterType2(src,b,2);
+                        dst[3] = filterType2(src,b,3);
+                        
+                        b += prevRowAdvance;
+                        src += 4;
+                        dst += 4;
+                    }
+                }break;
+                case 3:
+                {
+                    u32 a = 0;
+                    u8 *b = prevScanline;
+                    for(u32 x = 0; x < width;x++)
+                    {
+                        dst[0] = filterType3(src,(u8*)&a,b,0);
+                        dst[1] = filterType3(src,(u8*)&a,b,1);
+                        dst[2] = filterType3(src,(u8*)&a,b,2);
+                        dst[3] = filterType3(src,(u8*)&a,b,3);
+                        
+                        a = *(u32*)dst;
+                        
+                        b += prevRowAdvance;
+                        src += 4;
+                        dst += 4;
+                    }
+                }break;
+                case 4:
+                {
+                    u32 a = 0;
+                    u32 c = 0;
+                    u8 *b = prevScanline;
+                    
+                    for(u32 x = 0; x < width;x++)
+                    {
+                        dst[0] = filterType4(src,(u8*)&a,b,(u8*)&c,0);
+                        dst[1] = filterType4(src,(u8*)&a,b,(u8*)&c,1);
+                        dst[2] = filterType4(src,(u8*)&a,b,(u8*)&c,2);
+                        dst[3] = filterType4(src,(u8*)&a,b,(u8*)&c,3);
+                        
+                        c = *(u32*)b;
+                        a = *(u32*)dst;
+                        
+                        b += prevRowAdvance;
+                        src += 4;
+                        dst += 4;
+                    }
+                }break;
+                default:
+                {
+                    fprintf(stdout,"The filter type of %u is not supported", filterType);
+                }break;
+            }
+            prevScanline = currentScanline;
+            prevRowAdvance = 4;
+        }
+        
+        assert(dst == imagePixelsEnd);
+        
     }
+    
+    *widthOut  = width;
+    *heightOut = height;
+    
+    return imagePixels;
 }
+
 
 int main(int argCount, char *argv[])
 {
-    if(argCount == 2) 
+    if(argCount == 3) 
     {
-        char *filename =  (char*)argv[1];
-        fprintf(stdout, "file %s is loading...:\n",filename);
+        Memory_arena arena;
+        char *inFileName =  (char*)argv[1];
+        char *outFileName =  (char*)argv[2];
+        fprintf(stdout, "file %s is loading...:\n",inFileName);
         
-        streaming_buffer fileContent = readEntireFile(filename);
-        parsingPNG(&fileContent);
+        streaming_buffer fileContent = readEntireFile(inFileName);
+        u32 width = 0;
+        u32 height = 0;
+        u8 *data = parsingPNG(&arena,&fileContent, &width, &height);
+        writeImage(data,width,height,outFileName);
     }
     else
     {
